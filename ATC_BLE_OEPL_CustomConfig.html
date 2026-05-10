@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>OEPL 多版价签 BLE 配置工具</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 700px; margin: 2rem auto; }
+        button, select, textarea { font-size: 16px; margin: 5px; padding: 8px; }
+        #log { background: #1e1e1e; color: #d4d4d4; padding: 10px; height: 200px; overflow-y: scroll; white-space: pre-wrap; font-family: Consolas, monospace; }
+        .preset-btn { background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .preset-btn:hover { background: #005a9e; }
+    </style>
+</head>
+<body>
+    <h2>OEPL 价签 BLE 动态配置（多预设）</h2>
+
+    <div>
+        <label>选择预设配置：</label>
+        <select id="presetSelect" onchange="loadPreset()">
+            <!-- 由 JS 动态生成 -->
+        </select>
+        <button class="preset-btn" onclick="applyPreset()">使用选中预设</button>
+    </div>
+
+    <div style="margin-top:10px;">
+        <label>或粘贴自定义 payload（92 位十六进制）：</label><br>
+        <textarea id="customPayload" rows="3" style="width:100%;" placeholder="140063000200..."></textarea>
+        <button onclick="useCustom()">使用自定义 Payload</button>
+    </div>
+
+    <div style="margin-top:15px;">
+        <button id="startBtn" onclick="configure()">开始配置（连接设备并发送）</button>
+        <span id="status" style="margin-left:10px; color:gray;">就绪</span>
+    </div>
+
+    <pre id="log">日志将显示在这里...
+</pre>
+
+    <script>
+        // ============================================================
+        // ★ 唯一需要修改的配置区 ★
+        // 在此添加新的预设，只需复制一个对象，修改 name 和 payload
+        // ============================================================
+        const PRESETS = [
+            {
+                id: "01",
+                name: "阿里8250_4.2寸_SSD（400x300, SSD, 定制引脚）",
+                payload: "1400630002000001002C019001000000000200010000004D3784006737840000000000000000000801000002000803010000000403000080038001000000000000000000001001200140020000000000000000000000000000000000"
+            },
+            {
+                id: "02",
+                name: "阿里8250_4.2寸_UC（400x300, UC, 定制引脚）",
+                payload: "1400630002000001002C01900100000000020001000000010000000100000000000000000000000801000002000803010000000403000080038001000000000000000000001001200140020000000000000000000000000000000000"
+            }
+            // 添加新预设示例：
+            // ,{
+            //     id: "new_model",
+            //     name: "新型号（800x600, SSD）",
+            //     payload: "1400630002000001002C032002580..." // 新 payload
+            // }
+        ];
+
+        // ========== 全局变量 ==========
+        let currentPayload = PRESETS.length > 0 ? PRESETS[0].payload : "";
+
+        // ========== 初始化下拉菜单 ==========
+        function populatePresets() {
+            const select = document.getElementById('presetSelect');
+            // 保留默认空白选项
+            select.innerHTML = '<option value="">-- 请选择 --</option>';
+            PRESETS.forEach(preset => {
+                const opt = document.createElement('option');
+                opt.value = preset.id;
+                opt.textContent = preset.name;
+                select.appendChild(opt);
+            });
+            // 默认加载第一个预设的 payload 到文本框
+            if (PRESETS.length > 0) {
+                document.getElementById('customPayload').value = PRESETS[0].payload;
+                currentPayload = PRESETS[0].payload;
+                setStatus(`当前预设：${PRESETS[0].name}`);
+                log('已加载默认配置：' + PRESETS[0].name);
+            }
+        }
+
+        function loadPreset() {
+            const id = document.getElementById('presetSelect').value;
+            const preset = PRESETS.find(p => p.id === id);
+            if (preset) {
+                document.getElementById('customPayload').value = preset.payload;
+            }
+        }
+
+        function applyPreset() {
+            const id = document.getElementById('presetSelect').value;
+            if (!id) {
+                alert('请先选择一个预设配置');
+                return;
+            }
+            const preset = PRESETS.find(p => p.id === id);
+            if (!preset) {
+                alert('预设不存在');
+                return;
+            }
+            currentPayload = preset.payload;
+            document.getElementById('customPayload').value = currentPayload;
+            log(`已选择预设：${preset.name}`);
+            setStatus(`当前预设：${preset.name}`);
+        }
+
+        function useCustom() {
+            const raw = document.getElementById('customPayload').value.trim();
+            if (raw.length !== 184) {
+                alert('payload 必须为 92 字节（184 个十六进制字符）');
+                return;
+            }
+            if (!/^[0-9A-Fa-f]+$/.test(raw)) {
+                alert('payload 只允许十六进制字符 0-9, A-F');
+                return;
+            }
+            currentPayload = raw.toUpperCase();
+            document.getElementById('customPayload').value = currentPayload;
+            log('已使用自定义 payload');
+            setStatus('当前使用自定义 payload');
+        }
+
+        function log(msg) {
+            const el = document.getElementById('log');
+            el.textContent += msg + '\n';
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function setStatus(msg) {
+            document.getElementById('status').textContent = msg;
+        }
+
+        async function configure() {
+            if (!currentPayload || currentPayload.length !== 184) {
+                alert('请先选择或输入有效的 payload（92 字节十六进制）');
+                return;
+            }
+
+            const SERVICE_UUID = 0x1337;
+            const CHAR_UUID = 0x1337;
+            const payloadBytes = new Uint8Array(currentPayload.match(/../g).map(b => parseInt(b, 16)));
+
+            log('--------------------------------------------------');
+            log('开始配置流程...');
+            setStatus('正在搜索设备...');
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: 'ATC_' }],
+                    optionalServices: [SERVICE_UUID]
+                });
+                log(`已选择设备: ${device.name}`);
+                setStatus('已连接，请稍候...');
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                const characteristic = await service.getCharacteristic(CHAR_UUID);
+
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', (event) => {
+                    const val = new Uint8Array(event.target.value.buffer);
+                    const hex = Array.from(val).map(b => b.toString(16).padStart(2, '0')).join('');
+                    log('◄ 设备: ' + hex);
+                    if (val.length >= 2 && val[0] === 0x00 && val[1] === 0xCD) {
+                        log('   ↳ 收到配置读取响应 (0x00CD)');
+                    } else if (val.length >= 2 && val[0] === 0x00 && val[1] === 0xCE) {
+                        log('   ↳ 配置保存成功 (0x00CE)，设备将重启');
+                        setStatus('配置成功！设备即将重启');
+                    }
+                });
+                log('通知已开启');
+
+                log('发送读取配置命令 (0x0011)');
+                await characteristic.writeValueWithoutResponse(new Uint8Array([0x00, 0x11]));
+                await new Promise(r => setTimeout(r, 500));
+
+                const cmd = new Uint8Array([0x00, 0x10, ...payloadBytes]);
+                log(`发送配置命令 (0x0010 + 92字节)`);
+                await characteristic.writeValueWithoutResponse(cmd);
+                log('等待设备确认...');
+                await new Promise(r => setTimeout(r, 3000));
+                log('配置流程结束。');
+                setStatus('操作完成');
+
+            } catch (error) {
+                log('错误: ' + error.toString());
+                setStatus('出错，查看日志');
+                if (error.message.includes('User cancelled')) {
+                    log('用户取消了选择');
+                }
+            }
+        }
+
+        // 页面加载完成后初始化
+        window.onload = populatePresets;
+    </script>
+</body>
+</html>
